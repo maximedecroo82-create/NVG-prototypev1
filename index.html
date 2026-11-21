@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NVG-OS // Système de Vision Nocturne & ESP</title>
+    <!-- Tailwind CSS pour la mise en page réactive -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Police monospace tactique -->
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        /* Configuration globale et styles tactiques personnalisés */
+        :root {
+            --hud-color: #00ff66;
+            --hud-glow: rgba(0, 255, 102, 0.45);
+            --hud-bg: rgba(0, 20, 8, 0.65);
+        }
+
+        body.mode-wp {
+            --hud-color: #38f2ff;
+            --hud-glow: rgba(56, 242, 255, 0.45);
+            --hud-bg: rgba(4, 18, 28, 0.65);
+        }
+
+        body.mode-normal {
+            --hud-color: #ffaa00;
+            --hud-glow: rgba(255, 170, 0, 0.45);
+            --hud-bg: rgba(20, 14, 4, 0.65);
+        }
+
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #030504;
+            font-family: 'Share Tech Mono', monospace;
+            color: var(--hud-color);
+        }
+
+        /* Effets visuels NVG : Scanlines et Vignettage */
+        .scanlines {
+            background: linear-gradient(
+                to bottom,
+                rgba(255, 255, 255, 0),
+                rgba(255, 255, 255, 0) 50%,
+                rgba(0, 0, 0, 0.28) 50%,
+                rgba(0, 0, 0, 0.28)
+            );
+            background-size: 100% 4px;
+            pointer-events: none;
+        }
+
+        .vignette {
+            background: radial-gradient(
+                circle at center,
+                transparent 52%,
+                rgba(0, 0, 0, 0.55) 82%,
+                rgba(0, 0, 0, 0.94) 100%
+            );
+            pointer-events: none;
+        }
+
+        /* Bordures et boutons tactiques */
+        .hud-panel {
+            background: var(--hud-bg);
+            border: 1px solid var(--hud-color);
+            box-shadow: 0 0 12px var(--hud-glow), inset 0 0 8px rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+            text-shadow: 0 0 6px var(--hud-glow);
+        }
+
+        .hud-btn {
+            background: rgba(0, 0, 0, 0.55);
+            border: 1px solid var(--hud-color);
+            color: var(--hud-color);
+            transition: all 0.15s ease;
+            text-shadow: 0 0 5px var(--hud-glow);
+        }
+
+        .hud-btn:active {
+            transform: scale(0.95);
+        }
+
+        .hud-btn.active {
+            background: var(--hud-color);
+            color: #020804;
+            font-weight: bold;
+            text-shadow: none;
+            box-shadow: 0 0 14px var(--hud-glow);
+        }
+
+        /* Curseur personnalisé pour le gain lumineux */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            background: rgba(255, 255, 255, 0.15);
+            height: 6px;
+            border-radius: 999px;
+            border: 1px solid var(--hud-color);
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: var(--hud-color);
+            cursor: pointer;
+            box-shadow: 0 0 10px var(--hud-color);
+        }
+
+        /* Animation de pulsation pour le statut */
+        @keyframes pulseGlow {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        .blink {
+            animation: pulseGlow 1.4s infinite;
+        }
+    </style>
+</head>
+<body class="mode-green">
+
+    <!-- Conteneur principal plein écran -->
+    <div id="app-container" class="relative w-full h-full overflow-hidden bg-black">
+
+        <!-- Flux vidéo de la caméra (caché ou filtré directement) -->
+        <video id="webcam" class="absolute inset-0 w-full h-full object-cover" autoplay playsinline muted></video>
+
+        <!-- Canvas secondaire pour le mode démo si aucune caméra n'est disponible -->
+        <canvas id="demo-bg-canvas" class="hidden absolute inset-0 w-full h-full object-cover"></canvas>
+
+        <!-- Canvas principal pour l'affichage ESP & Squelette -->
+        <canvas id="esp-canvas" class="absolute inset-0 w-full h-full pointer-events-none z-10"></canvas>
+
+        <!-- Couches d'effets optiques NVG -->
+        <div id="scanlines-layer" class="scanlines absolute inset-0 z-20"></div>
+        <div id="vignette-layer" class="vignette absolute inset-0 z-20"></div>
+
+        <!-- Réticule central discret -->
+        <div class="absolute inset-0 flex items-center justify-center pointer-events-none z-20 opacity-45">
+            <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+                <circle cx="32" cy="32" r="14" stroke="currentColor" stroke-width="1" stroke-dasharray="4 4"/>
+                <line x1="32" y1="6" x2="32" y2="14" stroke="currentColor" stroke-width="1.5"/>
+                <line x1="32" y1="50" x2="32" y2="58" stroke="currentColor" stroke-width="1.5"/>
+                <line x1="6" y1="32" x2="14" y2="32" stroke="currentColor" stroke-width="1.5"/>
+                <line x1="50" y1="32" x2="58" y2="32" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="32" cy="32" r="1.5" fill="currentColor"/>
+            </svg>
+        </div>
+
+        <!-- HUD SUPÉRIEUR : Télémétrie & État du système -->
+        <header class="absolute top-0 left-0 right-0 z-30 p-3 sm:p-4 flex justify-between items-start pointer-events-none">
+            <!-- Bloc gauche : Statut IA & FPS -->
+            <div class="hud-panel rounded-lg px-3 py-2 text-xs sm:text-sm pointer-events-auto">
+                <div class="flex items-center gap-2 font-bold tracking-wider">
+                    <span id="status-dot" class="inline-block w-2.5 h-2.5 rounded-full bg-current blink"></span>
+                    <span id="system-status">INIT IA...</span>
+                </div>
+                <div class="mt-1 opacity-90 flex gap-3 text-[11px] sm:text-xs">
+                    <span>FPS: <strong id="fps-counter">0</strong></span>
+                    <span>CIBLES: <strong id="target-counter">0</strong></span>
+                    <span id="source-badge">CAM: ARR</span>
+                </div>
+            </div>
+
+            <!-- Bloc droit : Bascule caméra & Mode Démo -->
+            <div class="flex flex-col sm:flex-row gap-2 pointer-events-auto">
+                <button id="btn-switch-cam" class="hud-btn rounded-lg px-3 py-2 text-xs sm:text-sm flex items-center gap-1.5 shadow-lg" title="Changer de caméra">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                    <span>CAMÉRA</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- ÉCRAN DE DÉMARRAGE / GESTION D'ERREUR CAMÉRA -->
+        <div id="overlay-modal" class="absolute inset-0 z-40 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+            <div class="hud-panel rounded-xl max-w-md w-full p-6 text-center space-y-4">
+                <div class="inline-block px-3 py-1 rounded border border-current text-xs tracking-widest uppercase">
+                    NVG-OS // MODULE OPTIQUE v2.4
+                </div>
+                <h1 class="text-xl sm:text-2xl font-bold tracking-wider">SYSTÈME DE VISION NOCTURNE & ESP</h1>
+                <p id="modal-message" class="text-xs sm:text-sm opacity-90 leading-relaxed">
+                    Initialisation du capteur optique et chargement du réseau neuronal local (MediaPipe Pose). Aucun serveur externe : traitement 100 % local sur votre appareil.
+                </p>
+
+                <!-- Barre de progression de chargement IA -->
+                <div id="loader-container" class="w-full space-y-1.5">
+                    <div class="w-full h-2 rounded-full bg-black/60 border border-current overflow-hidden">
+                        <div id="loader-bar" class="h-full bg-current transition-all duration-300" style="width: 15%"></div>
+                    </div>
+                    <p id="loader-text" class="text-[11px] opacity-80">Chargement du moteur IA local...</p>
+                </div>
+
+                <!-- Boutons d'action -->
+                <div id="modal-actions" class="hidden pt-2 flex flex-col sm:flex-row gap-3 justify-center">
+                    <button id="btn-start-cam" class="hud-btn active rounded-lg px-4 py-3 text-sm tracking-wider cursor-pointer">
+                        ACTIVER LA CAMÉRA
+                    </button>
+                    <button id="btn-start-demo" class="hud-btn rounded-lg px-4 py-3 text-sm tracking-wider cursor-pointer">
+                        MODE SIMULATION (DÉMO)
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- HUD INFÉRIEUR : Contrôles tactiques -->
+        <footer class="absolute bottom-0 left-0 right-0 z-30 p-3 sm:p-4 flex flex-col gap-2.5 pointer-events-none">
+
+            <!-- Barre de réglage du Gain / Amplification lumineuse -->
+            <div class="hud-panel rounded-lg px-3 py-2 max-w-md w-full mx-auto pointer-events-auto flex items-center gap-3">
+                <span class="text-xs whitespace-nowrap">GAIN LUM.</span>
+                <input id="gain-slider" type="range" min="80" max="260" value="145" class="w-full">
+                <span id="gain-value" class="text-xs w-10 text-right">145%</span>
+            </div>
+
+            <!-- Rangée des boutons de modes NVG et filtres ESP -->
+            <div class="flex flex-wrap justify-center gap-2 pointer-events-auto">
+                <!-- Modes Optiques -->
+                <button id="btn-mode-green" class="hud-btn active rounded-lg px-3 py-2.5 text-xs sm:text-sm">
+                    NVG VERT
+                </button>
+                <button id="btn-mode-wp" class="hud-btn rounded-lg px-3 py-2.5 text-xs sm:text-sm">
+                    PHOSPHORE BLANC
+                </button>
+                <button id="btn-mode-normal" class="hud-btn rounded-lg px-3 py-2.5 text-xs sm:text-sm">
+                    OPT. NORMALE
+                </button>
+
+                <!-- Séparateur visuel sur grand écran -->
+                <div class="hidden sm:block w-px bg-current opacity-30 mx-1"></div>
+
+                <!-- Bascules ESP -->
+                <button id="btn-toggle-skeleton" class="hud-btn active rounded-lg px-3 py-2.5 text-xs sm:text-sm">
+                    SQUELETTE: ON
+                </button>
+                <button id="btn-toggle-box" class="hud-btn active rounded-lg px-3 py-2.5 text-xs sm:text-sm">
+                    BOÎTE ESP: ON
+                </button>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Script principal : MediaPipe Tasks Vision + Caméra + Rendu ESP -->
+    <script type="module">
+        import {
+            PoseLandmarker,
+            FilesetResolver
+        } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+        // ==========================================
+        // 1. ÉTAT GLOBAL DE L'APPLICATION
+        // ==========================================
+        const state = {
+            poseLandmarker: null,
+            isModelReady: false,
+            isRunning: false,
+            isDemoMode: false,
+            facingMode: "environment", // "environment" = caméra arrière, "user" = avant
+            nvgMode: "green",          // "green" | "wp" | "normal"
+            gain: 145,                 // Pourcentage d'amplification lumineuse
+            showSkeleton: true,
+            showBox: true,
+            lastVideoTime: -1,
+            frameCount: 0,
+            lastFpsUpdate: performance.now(),
+            currentFps: 0
+        };
+
+        // Références DOM
+        const video = document.getElementById("webcam");
+        const demoBgCanvas = document.getElementById("demo-bg-canvas");
+        const demoBgCtx = demoBgCanvas.getContext("2d");
+        const espCanvas = document.getElementById("esp-canvas");
+        const ctx = espCanvas.getContext("2d");
+
+        const overlayModal = document.getElementById("overlay-modal");
+        const modalMessage = document.getElementById("modal-message");
+        const loaderContainer = document.getElementById("loader-container");
+        const loaderBar = document.getElementById("loader-bar");
+        const loaderText = document.getElementById("loader-text");
+        const modalActions = document.getElementById("modal-actions");
+
+        const systemStatus = document.getElementById("system-status");
+        const fpsCounter = document.getElementById("fps-counter");
+        const targetCounter = document.getElementById("target-counter");
+        const sourceBadge = document.getElementById("source-badge");
+        const gainSlider = document.getElementById("gain-slider");
+        const gainValue = document.getElementById("gain-value");
+
+        // Connexions anatomiques clés pour le squelette tactique (indices MediaPipe Pose)
+        const SKELETON_CONNECTIONS = [
+            // Torse
+            [11, 12], [11, 23], [12, 24], [23, 24],
+            // Bras gauche
+            [11, 13], [13, 15],
+            // Bras droit
+            [12, 14], [14, 16],
+            // Jambe gauche
+            [23, 25], [25, 27], [27, 31],
+            // Jambe droite
+            [24, 26], [26, 28], [28, 32],
+            // Cou / Tête
+            [0, 11], [0, 12]
+        ];
+
+        // Articulations principales à mettre en évidence par des points lumineux
+        const KEY_JOINTS = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+
+        // ==========================================
+        // 2. INITIALISATION DE MEDIAPIPE POSE (LOCAL)
+        // ==========================================
+        async function initPoseLandmarker() {
+            try {
+                loaderBar.style.width = "35%";
+                loaderText.textContent = "Téléchargement du runtime WASM...";
+
+                const vision = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+                );
+
+                loaderBar.style.width = "70%";
+                loaderText.textContent = "Chargement du modèle Pose Lite (0 € / Local)...";
+
+                state.poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numPoses: 3, // Détecte jusqu'à 3 personnes simultanément
+                    minPoseDetectionConfidence: 0.45,
+                    minPosePresenceConfidence: 0.45,
+                    minTrackingConfidence: 0.45
+                });
+
+                loaderBar.style.width = "100%";
+                loaderText.textContent = "Modèle neuronal prêt.";
+                state.isModelReady = true;
+
+                // Tente de démarrer automatiquement la caméra
+                await startCamera();
+            } catch (error) {
+                console.error("Erreur lors du chargement de MediaPipe :", error);
+                showFallbackModal(
+                    "Impossible de charger le moteur IA WebGL/WASM sur cet appareil. Vérifiez votre connexion initiale ou lancez le mode simulation.",
+                    true
+                );
+            }
+        }
+
+        // ==========================================
+        // 3. GESTION DE LA CAMÉRA (GETUSERMEDIA)
+        // ==========================================
+        async function startCamera() {
+            // Arrêt du flux précédent si existant
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+            }
+
+            state.isDemoMode = false;
+            video.classList.remove("hidden");
+            demoBgCanvas.classList.add("hidden");
+
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                showFallbackModal(
+                    "Votre navigateur ne supporte pas l'accès à la caméra (HTTPS requis sur mobile). Vous pouvez tester l'interface via le mode simulation.",
+                    true
+                );
+                return;
+            }
+
+            try {
+                const constraints = {
+                    audio: false,
+                    video: {
+                        facingMode: { ideal: state.facingMode },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                };
+
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+
+                await new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        resolve();
+                    };
+                });
+
+                // Mise à jour de l'interface
+                overlayModal.classList.add("hidden");
+                systemStatus.textContent = "NVG ACTIF // SCAN";
+                sourceBadge.textContent = state.facingMode === "environment" ? "CAM: ARR" : "CAM: AVT";
+                applyVideoFilters();
+                resizeCanvases();
+
+                if (!state.isRunning) {
+                    state.isRunning = true;
+                    requestAnimationFrame(renderLoop);
+                }
+            } catch (err) {
+                console.warn("Accès caméra refusé ou indisponible :", err);
+                let msg = "Accès à la caméra refusé ou aucune caméra détectée sur cet appareil.";
+                if (err.name === "NotAllowedError") {
+                    msg = "Permission caméra refusée. Autorisez l'accès dans les réglages du navigateur ou testez le mode simulation.";
+                }
+                showFallbackModal(msg, true);
+            }
+        }
+
+        // Active un mode simulation visuel si l'utilisateur n'a pas de caméra
+        function startDemoMode() {
+            state.isDemoMode = true;
+            video.classList.add("hidden");
+            demoBgCanvas.classList.remove("hidden");
+            overlayModal.classList.add("hidden");
+
+            systemStatus.textContent = "MODE SIMULATION";
+            sourceBadge.textContent = "SRC: SIMU";
+            applyVideoFilters();
+            resizeCanvases();
+
+            if (!state.isRunning) {
+                state.isRunning = true;
+                requestAnimationFrame(renderLoop);
+            }
+        }
+
+        function showFallbackModal(message, showButtons) {
+            overlayModal.classList.remove("hidden");
+            loaderContainer.classList.add("hidden");
+            modalMessage.textContent = message;
+            if (showButtons) {
+                modalActions.classList.remove("hidden");
+            }
+        }
+
+        // ==========================================
+        // 4. FILTRES OPTIQUES DE VISION NOCTURNE
+        // ==========================================
+        function applyVideoFilters() {
+            const b = state.gain / 100; // Luminosité (0.8 à 2.6)
+            const c = 1 + (state.gain - 100) / 180; // Contraste dynamique
+
+            let filterCSS = "";
+            if (state.nvgMode === "green") {
+                // Vert NVG classique : niveaux de gris + teinte verte lumineuse
+                filterCSS = `grayscale(100%) brightness(${b}) contrast(${c}) sepia(100%) hue-rotate(75deg) saturate(420%)`;
+            } else if (state.nvgMode === "wp") {
+                // Blanc Phosphore (P45) : teinte froide cyan/bleutée haute définition
+                filterCSS = `grayscale(100%) brightness(${b}) contrast(${c * 1.08}) sepia(100%) hue-rotate(155deg) saturate(260%)`;
+            } else {
+                // Caméra normale avec amplification lumineuse légère
+                filterCSS = `brightness(${b}) contrast(${c})`;
+            }
+
+            // Effet miroir uniquement sur la caméra frontale
+            const mirrorTransform = (!state.isDemoMode && state.facingMode === "user") ? "scaleX(-1)" : "scaleX(1)";
+
+            video.style.filter = filterCSS;
+            video.style.transform = mirrorTransform;
+            demoBgCanvas.style.filter = filterCSS;
+        }
+
+        // ==========================================
+        // 5. REDIMENSIONNEMENT ADAPTATIF DU CANVAS
+        // ==========================================
+        function resizeCanvases() {
+            const w = window.innerWidth;
+            const h = window.innerHeight;
+            espCanvas.width = w;
+            espCanvas.height = h;
+            demoBgCanvas.width = w;
+            demoBgCanvas.height = h;
+        }
+        window.addEventListener("resize", resizeCanvases);
+
+        // ==========================================
+        // 6. RENDU DU FOND EN MODE SIMULATION (DÉMO)
+        // ==========================================
+        function drawDemoEnvironment(now) {
+            const w = demoBgCanvas.width;
+            const h = demoBgCanvas.height;
+
+            // Décor nocturne simulé (couloir sombre avec grille de profondeur)
+            demoBgCtx.fillStyle = "#080c0a";
+            demoBgCtx.fillRect(0, 0, w, h);
+
+            demoBgCtx.strokeStyle = "rgba(180, 220, 200, 0.14)";
+            demoBgCtx.lineWidth = 1;
+
+            const horizonY = h * 0.48;
+            const centerX = w * 0.5;
+
+            // Lignes de perspective du couloir
+            for (let i = -4; i <= 4; i++) {
+                demoBgCtx.beginPath();
+                demoBgCtx.moveTo(centerX + i * 25, horizonY);
+                demoBgCtx.lineTo(centerX + i * (w * 0.35), h);
+                demoBgCtx.stroke();
+            }
+
+            // Cadres muraux
+            demoBgCtx.strokeRect(w * 0.15, h * 0.2, w * 0.7, h * 0.58);
+            demoBgCtx.strokeRect(w * 0.32, h * 0.32, w * 0.36, h * 0.34);
+
+            // Génère un squelette synthétique animé qui marche sur place
+            const t = now * 0.0025;
+            const swayX = Math.sin(t * 0.7) * 0.14;
+            const bobY = Math.abs(Math.sin(t * 2)) * 0.015;
+            const armSwing = Math.sin(t * 2) * 0.04;
+            const legSwing = Math.cos(t * 2) * 0.035;
+
+            const cx = 0.5 + swayX;
+            const cy = 0.52 + bobY;
+
+            // Construction des 33 points compatibles MediaPipe
+            const fakeLandmarks = Array.from({ length: 33 }, () => ({ x: cx, y: cy, visibility: 0.98 }));
+            fakeLandmarks[0]  = { x: cx, y: cy - 0.24, visibility: 0.99 }; // Nez/Tête
+            fakeLandmarks[11] = { x: cx - 0.07, y: cy - 0.14, visibility: 0.98 }; // Épaule G
+            fakeLandmarks[12] = { x: cx + 0.07, y: cy - 0.14, visibility: 0.98 }; // Épaule D
+            fakeLandmarks[13] = { x: cx - 0.10, y: cy - 0.03 + armSwing, visibility: 0.95 }; // Coude G
+            fakeLandmarks[14] = { x: cx + 0.10, y: cy - 0.03 - armSwing, visibility: 0.95 }; // Coude D
+            fakeLandmarks[15] = { x: cx - 0.11, y: cy + 0.08 + armSwing * 1.5, visibility: 0.92 }; // Poignet G
+            fakeLandmarks[16] = { x: cx + 0.11, y: cy + 0.08 - armSwing * 1.5, visibility: 0.92 }; // Poignet D
+            fakeLandmarks[23] = { x: cx - 0.045, y: cy + 0.05, visibility: 0.97 }; // Hanche G
+            fakeLandmarks[24] = { x: cx + 0.045, y: cy + 0.05, visibility: 0.97 }; // Hanche D
+            fakeLandmarks[25] = { x: cx - 0.05, y: cy + 0.19 + legSwing, visibility: 0.94 }; // Genou G
+            fakeLandmarks[26] = { x: cx + 0.05, y: cy + 0.19 - legSwing, visibility: 0.94 }; // Genou D
+            fakeLandmarks[27] = { x: cx - 0.055, y: cy + 0.33, visibility: 0.91 }; // Cheville G
+            fakeLandmarks[28] = { x: cx + 0.055, y: cy + 0.33, visibility: 0.91 }; // Cheville D
+
+            return [fakeLandmarks];
+        }
+
+        // ==========================================
+        // 7. CONVERSION DES COORDONNÉES (OBJECT-COVER)
+        // ==========================================
+        // Ajuste précisément les coordonnées normalisées [0..1] de la vidéo
+        // au ratio d'affichage plein écran (object-fit: cover)
+        function mapLandmarkToScreen(lm, canvasW, canvasH, sourceW, sourceH, isMirrored) {
+            let nx = isMirrored ? (1 - lm.x) : lm.x;
+            let ny = lm.y;
+
+            if (!sourceW || !sourceH) {
+                return { x: nx * canvasW, y: ny * canvasH };
+            }
+
+            const videoRatio = sourceW / sourceH;
+            const screenRatio = canvasW / canvasH;
+
+            let drawW = canvasW;
+            let drawH = canvasH;
+            let offsetX = 0;
+            let offsetY = 0;
+
+            if (screenRatio > videoRatio) {
+                drawH = canvasW / videoRatio;
+                offsetY = (canvasH - drawH) / 2;
+            } else {
+                drawW = canvasH * videoRatio;
+                offsetX = (canvasW - drawW) / 2;
+            }
+
+            return {
+                x: nx * drawW + offsetX,
+                y: ny * drawH + offsetY
+            };
+        }
+
+        // ==========================================
+        // 8. DESSIN DU SQUELETTE & DE LA BOÎTE ESP
+        // ==========================================
+        function getHudPalette() {
+            if (state.nvgMode === "wp") {
+                return { primary: "#38f2ff", secondary: "#ffffff", boxBg: "rgba(56, 242, 255, 0.08)" };
+            }
+            if (state.nvgMode === "normal") {
+                return { primary: "#ffaa00", secondary: "#ff3b30", boxBg: "rgba(255, 170, 0, 0.08)" };
+            }
+            return { primary: "#00ff66", secondary: "#b8ffda", boxBg: "rgba(0, 255, 102, 0.08)" };
+        }
+
+        function drawEspTargets(poses, sourceW, sourceH) {
+            const w = espCanvas.width;
+            const h = espCanvas.height;
+            ctx.clearRect(0, 0, w, h);
+
+            targetCounter.textContent = poses.length;
+            if (poses.length === 0) return;
+
+            const palette = getHudPalette();
+            const isMirrored = !state.isDemoMode && state.facingMode === "user";
+
+            poses.forEach((landmarks, index) => {
+                let minX = Infinity, minY = Infinity;
+                let maxX = -Infinity, maxY = -Infinity;
+                let visibilitySum = 0;
+                let visibleCount = 0;
+
+                // Convertit tous les points clés à l'écran
+                const screenPoints = landmarks.map((lm, idx) => {
+                    const pt = mapLandmarkToScreen(lm, w, h, sourceW, sourceH, isMirrored);
+                    if (KEY_JOINTS.includes(idx) && (lm.visibility ?? 1) > 0.35) {
+                        minX = Math.min(minX, pt.x);
+                        minY = Math.min(minY, pt.y);
+                        maxX = Math.max(maxX, pt.x);
+                        maxY = Math.max(maxY, pt.y);
+                        visibilitySum += (lm.visibility ?? 0.85);
+                        visibleCount++;
+                    }
+                    return { ...pt, visibility: lm.visibility ?? 1 };
+                });
+
+                if (visibleCount < 4) return;
+
+                // Marge autour du corps pour la boîte englobante
+                const boxWidthRaw = Math.max(40, maxX - minX);
+                const boxHeightRaw = Math.max(80, maxY - minY);
+                const padX = boxWidthRaw * 0.18;
+                const padYTop = boxHeightRaw * 0.14;
+                const padYBottom = boxHeightRaw * 0.08;
+
+                const bx = Math.max(8, minX - padX);
+                const by = Math.max(28, minY - padYTop);
+                const bw = Math.min(w - bx - 8, boxWidthRaw + padX * 2);
+                const bh = Math.min(h - by - 8, boxHeightRaw + padYTop + padYBottom);
+
+                // Estimation approximative de la distance (basée sur la hauteur apparente à l'écran)
+                const heightRatio = bh / h;
+                const estimatedMeters = Math.max(0.8, Math.min(25, (1.45 / Math.max(0.08, heightRatio)))).toFixed(1);
+                const confidencePct = Math.min(99, Math.round((visibilitySum / visibleCount) * 100));
+
+                ctx.save();
+                ctx.shadowColor = palette.primary;
+                ctx.shadowBlur = 10;
+
+                // --- A. DESSIN DU SQUELETTE NÉON ---
+                if (state.showSkeleton) {
+                    ctx.strokeStyle = palette.primary;
+                    ctx.lineWidth = 2.5;
+                    ctx.lineCap = "round";
+
+                    SKELETON_CONNECTIONS.forEach(([i, j]) => {
+                        const p1 = screenPoints[i];
+                        const p2 = screenPoints[j];
+                        if (p1 && p2 && p1.visibility > 0.35 && p2.visibility > 0.35) {
+                            ctx.beginPath();
+                            ctx.moveTo(p1.x, p1.y);
+                            ctx.lineTo(p2.x, p2.y);
+                            ctx.stroke();
+                        }
+                    });
+
+                    // Articulations lumineuses
+                    KEY_JOINTS.forEach((idx) => {
+                        const pt = screenPoints[idx];
+                        if (pt && pt.visibility > 0.35) {
+                            ctx.fillStyle = palette.secondary;
+                            ctx.beginPath();
+                            ctx.arc(pt.x, pt.y, idx === 0 ? 5 : 3.5, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+                    });
+                }
+
+                // --- B. DESSIN DE LA BOÎTE ESP TACTIQUE ---
+                if (state.showBox) {
+                    // Fond très léger
+                    ctx.fillStyle = palette.boxBg;
+                    ctx.fillRect(bx, by, bw, bh);
+
+                    // Cadre fin en pointillés
+                    ctx.strokeStyle = palette.primary;
+                    ctx.lineWidth = 1;
+                    ctx.setLineDash([4, 4]);
+                    ctx.strokeRect(bx, by, bw, bh);
+                    ctx.setLineDash([]);
+
+                    // Coins tactiques renforcés
+                    const cornerLen = Math.min(22, bw * 0.22, bh * 0.15);
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    // Haut-gauche
+                    ctx.moveTo(bx, by + cornerLen);
+                    ctx.lineTo(bx, by);
+                    ctx.lineTo(bx + cornerLen, by);
+                    // Haut-droit
+                    ctx.moveTo(bx + bw - cornerLen, by);
+                    ctx.lineTo(bx + bw, by);
+                    ctx.lineTo(bx + bw, by + cornerLen);
+                    // Bas-gauche
+                    ctx.moveTo(bx, by + bh - cornerLen);
+                    ctx.lineTo(bx, by + bh);
+                    ctx.lineTo(bx + cornerLen, by + bh);
+                    // Bas-droit
+                    ctx.moveTo(bx + bw - cornerLen, by + bh);
+                    ctx.lineTo(bx + bw, by + bh);
+                    ctx.lineTo(bx + bw, by + bh - cornerLen);
+                    ctx.stroke();
+
+                    // Étiquette HUD au-dessus de la boîte
+                    const labelText = `TARGET LOCKED #${index + 1} // ~${estimatedMeters}m [${confidencePct}%]`;
+                    ctx.font = "bold 12px 'Share Tech Mono', monospace";
+                    const textMetrics = ctx.measureText(labelText);
+                    const tagW = textMetrics.width + 12;
+                    const tagH = 20;
+                    const tagY = Math.max(4, by - tagH - 4);
+
+                    ctx.fillStyle = palette.primary;
+                    ctx.fillRect(bx, tagY, tagW, tagH);
+
+                    ctx.shadowBlur = 0;
+                    ctx.fillStyle = "#020804";
+                    ctx.fillText(labelText, bx + 6, tagY + 14);
+                }
+
+                ctx.restore();
+            });
+        }
+
+        // ==========================================
+        // 9. BOUCLE PRINCIPALE TEMPS RÉEL
+        // ==========================================
+        function renderLoop(now) {
+            if (!state.isRunning) return;
+
+            // Calcul des FPS
+            state.frameCount++;
+            if (now - state.lastFpsUpdate >= 500) {
+                state.currentFps = Math.round((state.frameCount * 1000) / (now - state.lastFpsUpdate));
+                fpsCounter.textContent = state.currentFps;
+                state.frameCount = 0;
+                state.lastFpsUpdate = now;
+            }
+
+            if (state.isDemoMode) {
+                const fakePoses = drawDemoEnvironment(now);
+                drawEspTargets(fakePoses, demoBgCanvas.width, demoBgCanvas.height);
+            } else if (state.isModelReady && video.readyState >= 2) {
+                if (video.currentTime !== state.lastVideoTime) {
+                    state.lastVideoTime = video.currentTime;
+                    const results = state.poseLandmarker.detectForVideo(video, now);
+                    drawEspTargets(
+                        results.landmarks || [],
+                        video.videoWidth,
+                        video.videoHeight
+                    );
+                }
+            }
+
+            requestAnimationFrame(renderLoop);
+        }
+
+        // ==========================================
+        // 10. ÉVÉNEMENTS DE L'INTERFACE UTILISATEUR
+        // ==========================================
+        // Bascule caméra avant / arrière
+        document.getElementById("btn-switch-cam").addEventListener("click", () => {
+            state.facingMode = state.facingMode === "environment" ? "user" : "environment";
+            startCamera();
+        });
+
+        // Boutons du modal de secours
+        document.getElementById("btn-start-cam").addEventListener("click", () => startCamera());
+        document.getElementById("btn-start-demo").addEventListener("click", () => startDemoMode());
+
+        // Sélection du mode visuel NVG
+        const modeButtons = {
+            green: document.getElementById("btn-mode-green"),
+            wp: document.getElementById("btn-mode-wp"),
+            normal: document.getElementById("btn-mode-normal")
+        };
+
+        function setNvgMode(mode) {
+            state.nvgMode = mode;
+            document.body.className = `mode-${mode}`;
+            Object.entries(modeButtons).forEach(([key, btn]) => {
+                btn.classList.toggle("active", key === mode);
+            });
+            applyVideoFilters();
+        }
+
+        modeButtons.green.addEventListener("click", () => setNvgMode("green"));
+        modeButtons.wp.addEventListener("click", () => setNvgMode("wp"));
+        modeButtons.normal.addEventListener("click", () => setNvgMode("normal"));
+
+        // Curseur de gain lumineux
+        gainSlider.addEventListener("input", (e) => {
+            state.gain = parseInt(e.target.value, 10);
+            gainValue.textContent = `${state.gain}%`;
+            applyVideoFilters();
+        });
+
+        // Bascule Squelette
+        const btnToggleSkeleton = document.getElementById("btn-toggle-skeleton");
+        btnToggleSkeleton.addEventListener("click", () => {
+            state.showSkeleton = !state.showSkeleton;
+            btnToggleSkeleton.textContent = `SQUELETTE: ${state.showSkeleton ? "ON" : "OFF"}`;
+            btnToggleSkeleton.classList.toggle("active", state.showSkeleton);
+        });
+
+        // Bascule Boîte ESP
+        const btnToggleBox = document.getElementById("btn-toggle-box");
+        btnToggleBox.addEventListener("click", () => {
+            state.showBox = !state.showBox;
+            btnToggleBox.textContent = `BOÎTE ESP: ${state.showBox ? "ON" : "OFF"}`;
+            btnToggleBox.classList.toggle("active", state.showBox);
+        });
+
+        // Lancement au chargement de la page
+        window.addEventListener("load", () => {
+            resizeCanvases();
+            initPoseLandmarker();
+        });
+    </script>
+</body>
+</html>
